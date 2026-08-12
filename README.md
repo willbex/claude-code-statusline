@@ -1,20 +1,20 @@
 # claude-code-statusline
 
-A two-line status line for [Claude Code](https://code.claude.com), plus a matching renderer for the subagent panel. Pure Python, standard library only, no subprocess spawns.
+A two-line status line for [Claude Code](https://code.claude.com), plus a matching renderer for the subagent panel. Pure Python, standard library only.
 
 <!-- TODO: screenshot -->
 
 **Line 1:** model · reasoning effort · directory · git branch
 **Line 2:** context bar · % · tokens · cache hit rate · cost · elapsed time · weekly limit
 
-The subagent status line renders each row in the agent panel as: status glyph, agent name, live progress summary, model, inherited effort, context percentage.
+The subagent panel shows one row per agent: status, name, what it's doing right now, its model, and how full its context is.
 
 ## Design notes
 
-- **Two context scales.** The bar colour tracks the harsher of two signals: absolute tokens (context rot starts around the same counts whatever the window size) and percentage of the window (auto-compact fires at ~83%, so red starts at 75%).
-- **Cache hit rate.** A drop from the 95–99% steady state points at whatever rewrote the prompt prefix: an edited CLAUDE.md, a model or effort switch, an expired TTL, an MCP server that changed its tool list.
-- **Graceful degradation.** Every payload field is treated as optional, the scripts always print non-empty output and exit 0 — a single failed invocation would otherwise blank the status line with no error shown.
-- **Fast.** Git branch is read straight from `.git/HEAD`; there are no subprocess calls, so the script stays well under the harness's refresh cadence even on slow machines.
+- **The context bar warns you early.** It turns amber and then red before the conversation gets long enough to hurt: long context makes the model noticeably worse, and Claude Code auto-compacts near the top of the window, which loses detail. When the bar goes red, it's a good moment to wrap up or start a fresh session.
+- **The cache percentage watches your costs.** Claude charges a fraction of the price for parts of the conversation it has already processed. In a healthy session this number sits at 95–99%. A sudden drop means something invalidated that saved prefix — the next requests get slower and more expensive, and the status line makes it visible the moment it happens.
+- **It never leaves you with a blank bar.** Missing data renders as placeholders and any internal error shows up as a short note, so the status line keeps working whatever the payload looks like.
+- **It's instant.** Everything is read from files already on disk, with zero external commands, so rendering takes a few milliseconds even on slow machines.
 
 ## Requirements
 
@@ -46,34 +46,7 @@ Add to `~/.claude/settings.json`:
 
 `CLAUDE_CONFIG_DIR` is honoured throughout if you keep your config elsewhere.
 
-## Configuration
-
-Thresholds live as constants at the top of each script: token/percentage bands for the context bar (`ROT_*`, `COMPACT_*`), the weekly-quota bands (`WEEK_*`), and the cache-hit floors (`CACHE_*`).
-
-## Toggle script
-
-`statusline-toggle.py` switches `settings.json` between this status line and [ccstatusline](https://github.com/sirmalloc/ccstatusline):
-
-```bash
-statusline-toggle.py          # toggle
-statusline-toggle.py mine     # force this status line
-statusline-toggle.py cc       # force ccstatusline
-statusline-toggle.py status   # print which one is active
-```
-
-## Troubleshooting
-
-<!-- TODO: expand each entry -->
-
-- **Windows: status line never appears.** The command is run through Git Bash and backslashes are eaten as escapes — use forward slashes in `statusLine.command`. Typical symptom under `--debug` is exit 126/127. ([anthropics/claude-code#79236](https://github.com/anthropics/claude-code/issues/79236))
-- **`"tui": "fullscreen"` silently disables custom status lines.** ([#76411](https://github.com/anthropics/claude-code/issues/76411))
-- **Managed/enterprise settings:** `allowManagedHooksOnly: true` disables custom status line commands. ([#86042](https://github.com/anthropics/claude-code/issues/86042))
-- **1M-context sessions may report `context_window_size: 200000`,** pinning the percentage at 100. The absolute-token scale keeps the bar colour meaningful regardless. ([#76751](https://github.com/anthropics/claude-code/issues/76751))
-- **`used_percentage` is computed against the full model window;** Claude Code's own "context low" warnings subtract an auto-compact buffer, so the numbers differ by design. ([#17959](https://github.com/anthropics/claude-code/issues/17959))
-
-## Payload reference
-
-Official schema: https://code.claude.com/docs/en/statusline.md
+`statusline-toggle.py` is included for anyone who also uses [ccstatusline](https://github.com/sirmalloc/ccstatusline): it flips `settings.json` between the two (`mine` / `cc` / `status` arguments).
 
 ## License
 
