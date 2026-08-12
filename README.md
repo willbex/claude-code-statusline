@@ -2,16 +2,21 @@
 
 A two-line status line for [Claude Code](https://code.claude.com), plus a matching renderer for the subagent panel. Pure Python, standard library only.
 
-<!-- TODO: screenshot -->
+![Status line in a live session](assets/statusline.png)
 
 **Line 1:** model · reasoning effort · directory · git branch
 **Line 2:** context bar · % · tokens · cache hit rate · cost · elapsed time · weekly limit
 
-The subagent panel shows one row per agent: status, name, what it's doing right now, its model, and how full its context is.
-
 ## Design notes
 
-- **The context bar warns you early.** It turns amber and then red before the conversation gets long enough to hurt: long context makes the model noticeably worse, and Claude Code auto-compacts near the top of the window, which loses detail. When the bar goes red, it's a good moment to wrap up or start a fresh session.
+- **The context bar warns you early.** Its colour comes from two independent checks, both always active — the harsher one wins:
+
+  | | 🟡 amber | 🔴 red | Why |
+  |---|---|---|---|
+  | Conversation size | 120k tokens | 350k tokens | context rot: long context makes any model worse |
+  | Window used | 55% | 75% | distance to auto-compact (~83%), which loses detail |
+
+  When the bar turns red, wrap up what you're doing or start a fresh session.
 - **The cache percentage watches your costs.** Claude charges a fraction of the price for parts of the conversation it has already processed. In a healthy session this number sits at 95–99%. A sudden drop means something invalidated that saved prefix — the next requests get slower and more expensive, and the status line makes it visible the moment it happens.
 - **It never leaves you with a blank bar.** Missing data renders as placeholders and any internal error shows up as a short note, so the status line keeps working whatever the payload looks like.
 - **It's instant.** Everything is read from files already on disk, with zero external commands, so rendering takes a few milliseconds even on slow machines.
@@ -44,10 +49,8 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-`CLAUDE_CONFIG_DIR` is honoured throughout if you keep your config elsewhere.
-
-`statusline-toggle.py` is included for anyone who also uses [ccstatusline](https://github.com/sirmalloc/ccstatusline): it flips `settings.json` between the two (`mine` / `cc` / `status` arguments).
+If you've moved your Claude Code config with the `CLAUDE_CONFIG_DIR` environment variable, copy the scripts to that directory and point the `settings.json` paths there; the scripts read the variable too and keep their cache files in the same place.
 
 ## License
 
-MIT
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
