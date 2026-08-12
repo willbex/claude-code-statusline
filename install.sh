@@ -3,21 +3,48 @@
 # Installs the status line into your Claude Code configuration directory.
 #
 #   ./install.sh              copy the scripts and wire them into settings.json
-#   ./install.sh --uninstall  remove the scripts and unwire them
+#   ./install.sh --uninstall  unwire them and delete the copies
 #
-# The existing settings.json is backed up before every write.
+# The existing settings.json is backed up before every write, and only the
+# entries this script itself wrote are ever rewired or removed.
 
 set -euo pipefail
-
-CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-SETTINGS="$CLAUDE_DIR/settings.json"
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FILES=(statusline.py subagent-statusline.py)
 
 die() {
   printf 'error: %s\n' "$1" >&2
   exit 1
 }
+
+# The default matches meta_path() in statusline.py and subagent-statusline.py —
+# keep the three in step.
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+
+# The directory lands verbatim inside a shell command in settings.json, where
+# whitespace or quotes would silently break every render.
+case "$CLAUDE_DIR" in
+  *[[:space:]]* | *\"* | *\'*)
+    die "CLAUDE_CONFIG_DIR must be free of spaces and quotes, it is written into a settings.json shell command: $CLAUDE_DIR"
+    ;;
+esac
+while [ "${CLAUDE_DIR%/}" != "$CLAUDE_DIR" ] && [ "$CLAUDE_DIR" != "/" ]; do
+  CLAUDE_DIR="${CLAUDE_DIR%/}"
+done
+case "$CLAUDE_DIR" in
+  /*) ;;
+  *) CLAUDE_DIR="$PWD/$CLAUDE_DIR" ;;
+esac
+
+# A command under $HOME is written with ~ so synced dotfiles keep working on
+# every machine.
+case "$CLAUDE_DIR" in
+  "$HOME") CMD_DIR="~" ;;
+  "$HOME"/*) CMD_DIR="~${CLAUDE_DIR#"$HOME"}" ;;
+  *) CMD_DIR="$CLAUDE_DIR" ;;
+esac
+
+SETTINGS="$CLAUDE_DIR/settings.json"
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FILES=(statusline.py subagent-statusline.py)
 
 usage() {
   cat <<'EOF'
@@ -25,11 +52,11 @@ Usage: ./install.sh [--uninstall] [--help]
 
   (no flags)   Copy statusline.py and subagent-statusline.py into your Claude
                Code directory and point settings.json at them.
-  --uninstall  Remove both scripts and drop the settings.json keys that point
-               at them.
+  --uninstall  Drop the settings.json entries this script wrote and delete the
+               two copied scripts.
   --help       Show this message.
 
-Set CLAUDE_CONFIG_DIR to install somewhere other than ~/.claude.
+Set CLAUDE_CONFIG_DIR to choose the install directory (default ~/.claude).
 EOF
 }
 
@@ -55,22 +82,15 @@ for candidate in python3 python; do
 done
 [ -n "$PYTHON" ] || die "Python 3.8+ is required and was not found on PATH."
 
-# Keep the command portable across machines when the directory is the default one.
-if [ "$CLAUDE_DIR" = "$HOME/.claude" ]; then
-  CMD_DIR="~/.claude"
-else
-  CMD_DIR="$CLAUDE_DIR"
-fi
-
 edit_settings() {
-  "$PYTHON" - "$SETTINGS" "$1" "$CMD_DIR" <<'PY'
+  "$PYTHON" - "$SETTINGS" "$1" "$CMD_DIR" "$CLAUDE_DIR" <<'PY'
 import json
 import os
 import shutil
 import sys
 import time
 
-settings_path, mode, cmd_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+settings_path, mode, cmd_dir, claude_dir = sys.argv[1:5]
 keys = {
     "statusLine": "statusline.py",
     "subagentStatusLine": "subagent-statusline.py",
@@ -94,40 +114,57 @@ else:
 if mode == "check":
     sys.exit(0)
 
+
+def owned(entry, script):
+    """True for exactly the entry install writes — all uninstall may touch."""
+    return (
+        isinstance(entry, dict)
+        and entry.get("type") == "command"
+        and entry.get("command") == "%s/%s" % (cmd_dir, script)
+    )
+
+
 changes = []
 notes = []
+remove = []
 
 if mode == "install":
     for key, script in keys.items():
-        entry = {"type": "command", "command": "%s/%s" % (cmd_dir, script)}
-        if key == "statusLine":
-            entry["refreshInterval"] = 10
-        if settings.get(key) == entry:
+        entry = settings.get(key)
+        if owned(entry, script):
             continue
-        previous = settings.get(key)
-        settings[key] = entry
+        command = "%s/%s" % (cmd_dir, script)
+        if isinstance(entry, dict):
+            # Own only type and command. refreshInterval and any other tuning
+            # inside the entry is the user's and survives an update.
+            settings[key] = dict(entry, type="command", command=command)
+            notes.append("  repointed your previous %s, keeping its other fields" % key)
+        else:
+            if entry is not None:
+                notes.append("  replaced your previous %s" % key)
+            fresh = {"type": "command", "command": command}
+            if key == "statusLine":
+                fresh["refreshInterval"] = 10
+            settings[key] = fresh
         changes.append(key)
-        if previous is not None:
-            notes.append("  replaced your previous %s" % key)
 else:
     for key, script in keys.items():
         entry = settings.get(key)
-        if entry is None:
-            continue
-        command = entry.get("command", "") if isinstance(entry, dict) else ""
-        # Leave a status line someone else configured alone.
-        if not command.endswith("/" + script):
-            notes.append(
-                "  left %s alone, it points at %s" % (key, command or "something else")
-            )
-            continue
-        del settings[key]
-        changes.append(key)
+        if owned(entry, script):
+            del settings[key]
+            changes.append(key)
+            remove.append(script)
+        elif entry is not None:
+            target = entry.get("command") if isinstance(entry, dict) else None
+            shown = target if isinstance(target, str) and target else "something else"
+            notes.append("  left %s alone, it points at %s" % (key, shown))
 
 for note in notes:
     print(note)
 
 if not changes:
+    if mode == "uninstall":
+        print("Nothing to remove from %s." % cmd_dir)
     sys.exit(0)
 
 # Only worth a backup once there is something to overwrite.
@@ -138,12 +175,24 @@ if os.path.exists(settings_path):
     while os.path.exists(backup_path):
         backup_path = "%s-%d" % (stem, suffix)
         suffix += 1
-    shutil.copyfile(settings_path, backup_path)
+    # copy2 keeps the mode: a private 0600 settings.json gets a 0600 backup.
+    shutil.copy2(settings_path, backup_path)
     print("  saved your old settings.json as %s" % os.path.basename(backup_path))
 
 with open(settings_path, "w", encoding="utf-8") as handle:
     json.dump(settings, handle, indent=2)
     handle.write("\n")
+
+# The settings write is the commitment point: only scripts it stopped
+# referencing are deleted, and only once it has landed.
+for script in remove:
+    try:
+        os.unlink(os.path.join(claude_dir, script))
+    except OSError:
+        pass
+
+if mode == "uninstall":
+    print("Removed from %s" % cmd_dir)
 PY
 }
 
@@ -161,13 +210,8 @@ if [ "$MODE" = install ]; then
     chmod +x "$CLAUDE_DIR/$file"
   done
 
+  edit_settings install
   printf 'Installed to %s\n' "$CMD_DIR"
-  edit_settings "$MODE"
 else
-  for file in "${FILES[@]}"; do
-    rm -f "$CLAUDE_DIR/$file"
-  done
-
-  printf 'Removed from %s\n' "$CMD_DIR"
-  edit_settings "$MODE"
+  edit_settings uninstall
 fi
