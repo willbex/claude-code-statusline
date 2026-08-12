@@ -37,6 +37,21 @@ WEEK_AMBER, WEEK_RED = 50, 85               # percent of the 7-day quota
 CACHE_AMBER, CACHE_RED = 90, 60
 
 
+def as_int(value, default=0):
+    """Coerce a number off the wire.
+
+    A JSON number's Python type follows the producer's serializer: a duration
+    in milliseconds lands as a float the moment someone writes it 9.55e4, and a
+    percentage as "61.7" the moment it gains a decimal place. float() accepts
+    every one of those spellings, and int() hands back the type the arithmetic
+    downstream assumes. A shape nobody anticipated costs the caller a default.
+    """
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def fmt_tokens(n):
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
@@ -46,7 +61,9 @@ def fmt_tokens(n):
 
 
 def fmt_duration(ms):
-    total = ms // 1000
+    # Fixing the type here settles it for h/m/s below: // is floor division,
+    # which keeps a float a float, and the :02d codes accept only int.
+    total = as_int(ms) // 1000
     h, m, s = total // 3600, (total % 3600) // 60, total % 60
     if h:
         return f"{h}h {m:02d}m"
@@ -70,11 +87,12 @@ def fmt_countdown(seconds):
 def weekly_usage(data):
     """The 7-day subscription quota — absent for API keys and before the first reply."""
     week = (data.get("rate_limits") or {}).get("seven_day") or {}
-    pct = week.get("used_percentage")
+    # Missing and unparsable collapse into the same outcome: drop the segment,
+    # the way a format change costs only the countdown further down.
+    pct = as_int(week.get("used_percentage"), None)
     if pct is None:
         return None
 
-    pct = int(pct)
     color = RED if pct >= WEEK_RED else AMBER if pct >= WEEK_AMBER else GREEN
     out = f"{color}7d {pct}%{RESET}"
 
@@ -223,7 +241,7 @@ def main():
     duration_ms = (data.get("cost") or {}).get("total_duration_ms") or 0
 
     ctx = data.get("context_window") or {}
-    pct = int(ctx.get("used_percentage") or 0)
+    pct = as_int(ctx.get("used_percentage"))
     used = ctx.get("total_input_tokens") or 0
     size = ctx.get("context_window_size") or 0
     usage = ctx.get("current_usage") or {}
