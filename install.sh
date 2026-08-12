@@ -19,13 +19,6 @@ die() {
 # keep the three in step.
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
-# The directory lands verbatim inside a shell command in settings.json, where
-# whitespace or quotes would silently break every render.
-case "$CLAUDE_DIR" in
-  *[[:space:]]* | *\"* | *\'*)
-    die "CLAUDE_CONFIG_DIR must be free of spaces and quotes, it is written into a settings.json shell command: $CLAUDE_DIR"
-    ;;
-esac
 while [ "${CLAUDE_DIR%/}" != "$CLAUDE_DIR" ] && [ "$CLAUDE_DIR" != "/" ]; do
   CLAUDE_DIR="${CLAUDE_DIR%/}"
 done
@@ -41,6 +34,16 @@ case "$CLAUDE_DIR" in
   "$HOME"/*) CMD_DIR="~${CLAUDE_DIR#"$HOME"}" ;;
   *) CMD_DIR="$CLAUDE_DIR" ;;
 esac
+
+# CMD_DIR is the exact string settings.json will carry inside a shell command,
+# so it is what gets validated — after normalization, once tilde substitution
+# has already hidden whatever $HOME itself contains. Spaces, quotes, `;`, `$`
+# and the rest would silently break every render.
+BAD_CHARS="${CMD_DIR//\//}"
+BAD_CHARS="${BAD_CHARS//[[:alnum:]_.+@,~-]/}"
+if [ -n "$BAD_CHARS" ]; then
+  die "the install directory would be written into settings.json as $CMD_DIR, and a shell command cannot safely carry: $BAD_CHARS"
+fi
 
 SETTINGS="$CLAUDE_DIR/settings.json"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,14 +86,15 @@ done
 [ -n "$PYTHON" ] || die "Python 3.8+ is required and was not found on PATH."
 
 edit_settings() {
-  "$PYTHON" - "$SETTINGS" "$1" "$CMD_DIR" "$CLAUDE_DIR" <<'PY'
+  "$PYTHON" - "$SETTINGS" "$1" "$CMD_DIR" "$CLAUDE_DIR" "$SRC_DIR" <<'PY'
+import filecmp
 import json
 import os
 import shutil
 import sys
 import time
 
-settings_path, mode, cmd_dir, claude_dir = sys.argv[1:5]
+settings_path, mode, cmd_dir, claude_dir, src_dir = sys.argv[1:6]
 keys = {
     "statusLine": "statusline.py",
     "subagentStatusLine": "subagent-statusline.py",
@@ -115,13 +119,28 @@ if mode == "check":
     sys.exit(0)
 
 
+def commands_for(script):
+    """Both spellings of the command install writes: portable and absolute."""
+    return ("%s/%s" % (cmd_dir, script), "%s/%s" % (claude_dir, script))
+
+
 def owned(entry, script):
     """True for exactly the entry install writes — all uninstall may touch."""
     return (
         isinstance(entry, dict)
         and entry.get("type") == "command"
-        and entry.get("command") == "%s/%s" % (cmd_dir, script)
+        and entry.get("command") in commands_for(script)
     )
+
+
+def referenced(script):
+    """A surviving entry naming the file keeps it on disk, whoever wrote it."""
+    for entry in settings.values():
+        if isinstance(entry, dict):
+            command = entry.get("command")
+            if isinstance(command, str) and any(p in command for p in commands_for(script)):
+                return True
+    return False
 
 
 changes = []
@@ -158,17 +177,35 @@ else:
             target = entry.get("command") if isinstance(entry, dict) else None
             shown = target if isinstance(target, str) and target else "something else"
             notes.append("  left %s alone, it points at %s" % (key, shown))
+    # A copy whose settings entry is already gone is still this installer's to
+    # delete when its bytes match the repo's script; anything edited stays put.
+    for script in keys.values():
+        path = os.path.join(claude_dir, script)
+        try:
+            orphan = (
+                script not in remove
+                and os.path.isfile(path)
+                and filecmp.cmp(path, os.path.join(src_dir, script), shallow=False)
+            )
+        except OSError:
+            orphan = False
+        if orphan:
+            remove.append(script)
+    kept = [script for script in remove if referenced(script)]
+    for script in kept:
+        notes.append("  kept %s, a settings.json entry still points at it" % script)
+    remove = [script for script in remove if script not in kept]
 
 for note in notes:
     print(note)
 
-if not changes:
+if not changes and not remove:
     if mode == "uninstall":
         print("Nothing to remove from %s." % cmd_dir)
     sys.exit(0)
 
 # Only worth a backup once there is something to overwrite.
-if os.path.exists(settings_path):
+if changes and os.path.exists(settings_path):
     stem = "%s.backup-%s" % (settings_path, time.strftime("%Y%m%d%H%M%S"))
     # Two runs in the same second must not cost you the older backup.
     backup_path, suffix = stem, 1
@@ -179,9 +216,10 @@ if os.path.exists(settings_path):
     shutil.copy2(settings_path, backup_path)
     print("  saved your old settings.json as %s" % os.path.basename(backup_path))
 
-with open(settings_path, "w", encoding="utf-8") as handle:
-    json.dump(settings, handle, indent=2)
-    handle.write("\n")
+if changes:
+    with open(settings_path, "w", encoding="utf-8") as handle:
+        json.dump(settings, handle, indent=2)
+        handle.write("\n")
 
 # The settings write is the commitment point: only scripts it stopped
 # referencing are deleted, and only once it has landed.
@@ -206,8 +244,11 @@ if [ "$MODE" = install ]; then
 
   mkdir -p "$CLAUDE_DIR"
   for file in "${FILES[@]}"; do
-    cp "$SRC_DIR/$file" "$CLAUDE_DIR/$file"
-    chmod +x "$CLAUDE_DIR/$file"
+    # mv replaces a symlink sitting at the destination; cp alone would write
+    # through it into whatever file the user pointed it at.
+    cp "$SRC_DIR/$file" "$CLAUDE_DIR/$file.tmp.$$"
+    chmod +x "$CLAUDE_DIR/$file.tmp.$$"
+    mv -f "$CLAUDE_DIR/$file.tmp.$$" "$CLAUDE_DIR/$file"
   done
 
   edit_settings install
