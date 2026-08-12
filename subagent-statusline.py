@@ -127,7 +127,7 @@ def render(task, columns, inherited):
     # `name` is the allocated agent name (Explore, Explore-2) — the only thing
     # that tells parallel rows apart. `label` is the live progress summary, but
     # falls back to the description, so it can never take the name slot.
-    name = task.get("name") or task.get("label") or task.get("type") or "agent"
+    name = task.get("name") or task.get("type") or "agent"
 
     metrics = []
     model = pretty_model(task.get("model"))
