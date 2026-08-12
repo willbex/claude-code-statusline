@@ -96,7 +96,7 @@ def context_level(pct, tokens):
     Duplicated verbatim in subagent-statusline.py, which maps the levels onto a
     quieter palette. Keep the two in step.
     """
-    rot = 2 if tokens > ROT_RED else 1 if tokens >= ROT_AMBER else 0
+    rot = 2 if tokens >= ROT_RED else 1 if tokens >= ROT_AMBER else 0
     compaction = 2 if pct >= COMPACT_RED else 1 if pct >= COMPACT_AMBER else 0
     return max(rot, compaction)
 
