@@ -127,17 +127,18 @@ def progress_bar(pct, width=10):
     return "█" * full + partial + DIM + "░" * (width - full - len(partial))
 
 
-def git_branch(cwd):
-    """Read .git/HEAD directly rather than spawning git.
+def git_info(cwd):
+    """Return (repo_root, branch), read from .git/HEAD.
 
     This runs on every message and on the idle refresh tick, where importing
     subprocess alone costs more than everything else here put together.
+    Once .git exists the root is known, so an unreadable HEAD still reports it.
     """
     path = os.path.abspath(cwd or ".")
     while not os.path.exists(os.path.join(path, ".git")):
         parent = os.path.dirname(path)
         if parent == path:
-            return ""
+            return "", ""
         path = parent
 
     git_dir = os.path.join(path, ".git")
@@ -146,13 +147,32 @@ def git_branch(cwd):
             with open(git_dir) as f:
                 git_dir = os.path.join(path, f.read().split("gitdir:", 1)[1].strip())
         except (OSError, IndexError):
-            return ""
+            return path, ""
     try:
         with open(os.path.join(git_dir, "HEAD")) as f:
             head = f.read().strip()
     except OSError:
-        return ""
-    return head[16:] if head.startswith("ref: refs/heads/") else head[:7]
+        return path, ""
+    return path, head[16:] if head.startswith("ref: refs/heads/") else head[:7]
+
+
+def fmt_dir(cwd, root):
+    """Locate cwd within its repo: full path to two levels deep, repo/…/leaf below.
+
+    A git-tracked home directory (chezmoi-style dotfiles) would relabel every
+    path under it repo-relative, and a repo rooted at / has no basename to show
+    — both keep the plain basename of cwd.
+    """
+    if not root or root == os.path.expanduser("~") or not os.path.basename(root):
+        return os.path.basename(cwd.rstrip("/")) or cwd
+    rel = os.path.relpath(os.path.abspath(cwd), root)
+    repo = os.path.basename(root)
+    if rel == ".":
+        return repo
+    parts = rel.split(os.sep)
+    if len(parts) <= 2:
+        return "/".join([repo, *parts])
+    return f"{repo}/…/{parts[-1]}"
 
 
 def meta_path(session_id):
@@ -253,9 +273,9 @@ def main():
     head = [f"{CYAN}{model}{RESET}" + (f" {AMBER}⚡{RESET}" if data.get("fast_mode") else "")]
     if effort:
         head.append(effort)
+    root, branch = git_info(cwd)
     if cwd:
-        head.append(f"📁 {os.path.basename(cwd.rstrip('/')) or cwd}")
-    branch = git_branch(cwd)
+        head.append(f"📁 {fmt_dir(cwd, root)}")
     if branch:
         head.append(f"🌿 {branch}")
 
