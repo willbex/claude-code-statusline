@@ -5,6 +5,7 @@ A two-line status line for [Claude Code](https://code.claude.com), with a render
 ![Status line in a live session](assets/statusline.png)
 
 **Line 1:** model · reasoning effort · directory · git branch
+
 **Line 2:** context bar · % · tokens · cache hit rate · cost · elapsed time · weekly limit
 
 ## Requirements
