@@ -226,6 +226,9 @@ def session_meta(session_id, model, effort, cache_read):
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         prune_meta(os.path.dirname(path))
+        # A sibling copy may have latched the flag since the read above, and the
+        # latch only ever turns on — pick it up again before landing the file.
+        warmed = warmed or bool(read_meta(path).get("cache_warmed"))
         # The harness runs concurrent copies of this script; a torn write must
         # never be visible, so land the file with a rename.
         tmp = f"{path}.{os.getpid()}.tmp"
