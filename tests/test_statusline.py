@@ -152,5 +152,59 @@ class SubagentEdgeCases(unittest.TestCase):
         self.assertIn("25%", out)
 
 
+class RenderedLineContracts(unittest.TestCase):
+    """One full typical payload rendered end to end, plus the failure contracts
+    the scripts promise: main degrades to an error marker on garbage input,
+    the subagent script exits 0 and stays quiet."""
+
+    def setUp(self):
+        self.config = tempfile.TemporaryDirectory()
+        self.addCleanup(self.config.cleanup)
+        self.env = {**os.environ, "CLAUDE_CONFIG_DIR": self.config.name}
+
+    def test_typical_payload_renders_both_lines(self):
+        payload = {
+            "session_id": "golden",
+            "model": {"display_name": "Opus 5 (1M context)"},
+            "effort": {"level": "high"},
+            "workspace": {"current_dir": "/x/repo/src"},
+            "cost": {"total_cost_usd": 1.234, "total_duration_ms": 125000},
+            "context_window": {
+                "used_percentage": 30,
+                "total_input_tokens": 60000,
+                "context_window_size": 200000,
+                "current_usage": {"cache_read_input_tokens": 9000, "input_tokens": 1000},
+            },
+            "rate_limits": {"seven_day": {"used_percentage": 20}},
+        }
+        line1, line2 = run(MAIN, payload, self.config.name).splitlines()
+        self.assertEqual(line1, "Opus 5 · high · 📁 src")
+        self.assertEqual(
+            line2, "███░░░░░░░ 30% · 60k/200k · cache 90% · $1.23 · 2m 05s · 7d 20%")
+
+    def test_garbage_stdin_degrades_to_an_error_marker(self):
+        proc = subprocess.run([sys.executable, MAIN], input="not json",
+                              capture_output=True, text=True, env=self.env)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("status line: JSONDecodeError", ANSI.sub("", proc.stdout))
+
+    def test_subagent_garbage_stdin_exits_zero_and_prints_nothing(self):
+        proc = subprocess.run([sys.executable, SUBAGENT], input="not json",
+                              capture_output=True, text=True, env=self.env)
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+
+    def test_one_broken_task_keeps_the_other_rows(self):
+        payload = {"columns": 120, "tasks": [
+            {"id": "bad", "name": "X", "status": "running",
+             "description": {"not": "a string"}},
+            {"id": "good", "name": "Explore", "status": "running",
+             "tokenCount": 1000, "contextWindowSize": 200000},
+        ]}
+        out = run(SUBAGENT, payload, self.config.name)
+        self.assertNotIn('"bad"', out)
+        self.assertIn('"good"', out)
+
+
 if __name__ == "__main__":
     unittest.main()
