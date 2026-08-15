@@ -37,6 +37,14 @@ WEEK_AMBER, WEEK_RED = 50, 85               # percent of the 7-day quota
 CACHE_AMBER, CACHE_RED = 90, 60
 
 
+def as_float(value, default=0.0):
+    """float-preserving twin of as_int, for the one field with real decimals."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def as_int(value, default=0):
     """Coerce a number off the wire.
 
@@ -178,8 +186,19 @@ def fmt_dir(cwd, root):
 def meta_path(session_id):
     """Hand-off file read by subagent-statusline.py — keep the two in step."""
     base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
-    safe = "".join(c if c.isalnum() or c == "-" else "_" for c in session_id)
+    safe = "".join(c if c.isalnum() or c == "-" else "_" for c in str(session_id))
     return os.path.join(base, "cache", "statusline", f"session-meta-{safe}.json")
+
+
+def read_meta(path):
+    """The file is shared mutable state on disk; anything unexpected in it —
+    unreadable, truncated, or valid JSON of the wrong shape — reads as absent."""
+    try:
+        with open(path) as f:
+            meta = json.load(f)
+        return meta if isinstance(meta, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def prune_meta(directory, max_age=7 * 86400):
@@ -203,13 +222,7 @@ def session_meta(session_id, model, effort, cache_read):
     if not session_id:
         return cache_read > 0
     path = meta_path(session_id)
-    warmed = False
-    try:
-        with open(path) as f:
-            warmed = bool(json.load(f).get("cache_warmed"))
-    except (OSError, ValueError):
-        pass
-    warmed = warmed or cache_read > 0
+    warmed = bool(read_meta(path).get("cache_warmed")) or cache_read > 0
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         prune_meta(os.path.dirname(path))
@@ -233,8 +246,8 @@ def cache_hit(usage, warmed):
     state points at whatever rewrote the prefix: an edited CLAUDE.md, a model or
     effort switch, an expired TTL, an MCP server that changed the tool list.
     """
-    read = usage.get("cache_read_input_tokens") or 0
-    fresh = (usage.get("input_tokens") or 0) + (usage.get("cache_creation_input_tokens") or 0)
+    read = as_int(usage.get("cache_read_input_tokens"))
+    fresh = as_int(usage.get("input_tokens")) + as_int(usage.get("cache_creation_input_tokens"))
     total = read + fresh
     if not total:
         return None
@@ -257,17 +270,17 @@ def main():
     model = ((data.get("model") or {}).get("display_name") or "?").split(" (")[0]
     effort = (data.get("effort") or {}).get("level")
     cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd") or ""
-    cost = (data.get("cost") or {}).get("total_cost_usd") or 0
+    cost = as_float((data.get("cost") or {}).get("total_cost_usd"))
     duration_ms = (data.get("cost") or {}).get("total_duration_ms") or 0
 
     ctx = data.get("context_window") or {}
     pct = as_int(ctx.get("used_percentage"))
-    used = ctx.get("total_input_tokens") or 0
-    size = ctx.get("context_window_size") or 0
+    used = as_int(ctx.get("total_input_tokens"))
+    size = as_int(ctx.get("context_window_size"))
     usage = ctx.get("current_usage") or {}
 
     warmed = session_meta(data.get("session_id"), model, effort,
-                          usage.get("cache_read_input_tokens") or 0)
+                          as_int(usage.get("cache_read_input_tokens")))
 
     # ── line 1 ────────────────────────────────────────────────────────────────
     head = [f"{CYAN}{model}{RESET}" + (f" {AMBER}⚡{RESET}" if data.get("fast_mode") else "")]

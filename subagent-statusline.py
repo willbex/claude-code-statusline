@@ -57,6 +57,14 @@ def visible_len(s):
     return len(ANSI.sub("", s))
 
 
+def as_int(value, default=0):
+    """Coerce a number off the wire — statusline.py explains the shapes."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def fmt_tokens(n):
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
@@ -96,7 +104,7 @@ def pretty_model(model_id):
 def meta_path(session_id):
     """Hand-off file written by statusline.py — keep the two in step."""
     base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
-    safe = "".join(c if c.isalnum() or c == "-" else "_" for c in session_id)
+    safe = "".join(c if c.isalnum() or c == "-" else "_" for c in str(session_id))
     return os.path.join(base, "cache", "statusline", f"session-meta-{safe}.json")
 
 
@@ -106,9 +114,11 @@ def session_effort(session_id):
         return None
     try:
         with open(meta_path(session_id)) as f:
-            return json.load(f).get("effort")
+            meta = json.load(f)
     except (OSError, ValueError):
         return None
+    # Shared state on disk: valid JSON of the wrong shape reads as absent.
+    return meta.get("effort") if isinstance(meta, dict) else None
 
 
 def fmt_effort(task, inherited):
@@ -137,8 +147,8 @@ def render(task, columns, inherited):
     if effort:
         metrics.append(effort)
 
-    tokens = task.get("tokenCount") or 0
-    size = task.get("contextWindowSize") or 0
+    tokens = as_int(task.get("tokenCount"))
+    size = as_int(task.get("contextWindowSize"))
     if not tokens:
         # Nothing measured yet — queued, or no API response has landed. See statusline.py.
         metrics.append(f"{DIM}—{RESET}")
