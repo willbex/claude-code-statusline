@@ -195,16 +195,17 @@ def main():
         print(json.dumps({"id": task_id, "content": content}))
 
 
-# Non-UTF-8 locales would otherwise blow up on the glyphs below, taking the
-# whole panel with them.
-try:
-    sys.stdout.reconfigure(errors="replace")
-except (AttributeError, ValueError):
-    pass
+if __name__ == "__main__":
+    # Non-UTF-8 locales would otherwise blow up on the glyphs below, taking the
+    # whole panel with them.
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
-try:
-    main()
-except Exception:
-    # The harness discards *every* row's decoration on a non-zero exit, so a
-    # failure here must still exit 0 and keep whatever was already printed.
-    pass
+    try:
+        main()
+    except Exception:
+        # The harness discards *every* row's decoration on a non-zero exit, so a
+        # failure here must still exit 0 and keep whatever was already printed.
+        pass

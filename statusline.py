@@ -319,15 +319,16 @@ def main():
     print(SEP.join(body))
 
 
-# Non-UTF-8 locales would otherwise blow up on the glyphs above, taking the
-# whole line with them.
-try:
-    sys.stdout.reconfigure(errors="replace")
-except (AttributeError, ValueError):
-    pass
+if __name__ == "__main__":
+    # Non-UTF-8 locales would otherwise blow up on the glyphs above, taking the
+    # whole line with them.
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
-try:
-    main()
-except Exception as exc:
-    # A traceback would render as a blank status line with no clue why.
-    print(f"{DIM}status line: {type(exc).__name__}{RESET}")
+    try:
+        main()
+    except Exception as exc:
+        # A traceback would render as a blank status line with no clue why.
+        print(f"{DIM}status line: {type(exc).__name__}{RESET}")
