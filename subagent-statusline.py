@@ -153,7 +153,9 @@ def render(task, columns, inherited):
         # Nothing measured yet — queued, or no API response has landed. See statusline.py.
         metrics.append(f"{DIM}—{RESET}")
     elif size:
-        pct = int(tokens * 100 / size)
+        # The count is printed beside it, so pegging the percentage at the ends of
+        # the scale loses nothing a mismatched window would have told the reader.
+        pct = min(100, max(0, int(tokens * 100 / size)))
         pct_color = ("", AMBER, RED)[context_level(pct, tokens)]
         metrics.append(f"{pct_color}{pct}%{RESET if pct_color else ''} {DIM}({fmt_tokens(tokens)}){RESET}")
     elif tokens:
@@ -166,7 +168,9 @@ def render(task, columns, inherited):
     # summary has landed, `label` diverges from the static description and is the
     # more useful of the two.
     desc = task.get("label") or task.get("description") or ""
-    desc = desc.strip().replace("\n", " ")
+    # Coerced rather than trusted: a malformed description must not cost the row
+    # its name, its status glyph and its context percentage.
+    desc = str(desc).strip().replace("\n", " ")
     room = columns - visible_len(left) - visible_len(right) - 6
     if desc and room >= 8:
         if len(desc) > room:
@@ -179,18 +183,21 @@ def render(task, columns, inherited):
 def main():
     data = json.load(sys.stdin)
     columns = data.get("columns")
-    if columns is None:
-        columns = 100  # 0 is a real width the harness sends on a narrow terminal
+    # 0 is a real width the harness sends on a narrow terminal, so only absence
+    # falls back — but the width lands in arithmetic, and a string there would
+    # cost every row its decoration rather than just this one.
+    columns = 100 if columns is None else as_int(columns, 100)
     inherited = session_effort(data.get("session_id"))
 
     for task in data.get("tasks") or []:
-        task_id = task.get("id")
-        if not task_id:
-            continue
         try:
+            # A task that is not an object at all fails on the first lookup, so
+            # one malformed task must not cost the other rows their decoration.
+            task_id = task.get("id")
+            if not task_id:
+                continue
             content = render(task, columns, inherited)
         except Exception:
-            # One malformed task must not cost the other rows their decoration.
             continue
         print(json.dumps({"id": task_id, "content": content}))
 

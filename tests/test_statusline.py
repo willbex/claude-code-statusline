@@ -82,6 +82,47 @@ class StatusLineEdgeCases(unittest.TestCase):
         out = run(MAIN, context_payload(total_input_tokens=1.2e4), self.config.name)
         self.assertIn("12k/200k", out)
 
+    def test_an_off_scale_percentage_reads_as_unknown_and_keeps_the_counts(self):
+        # anthropics/claude-code#74355: the reported percentage can contradict the
+        # token counts beside it. Pegging it to 100 would dress garbage up as a
+        # full red bar, so it reads as no measurement and the counts carry the row.
+        for pct in (140, -3, 1776950400):
+            with self.subTest(pct=pct):
+                line2 = run(MAIN, context_payload(used_percentage=pct),
+                            self.config.name).splitlines()[1]
+                self.assertIn("—", line2)
+                self.assertNotIn("%", line2)
+                self.assertIn("10k/200k", line2)
+
+    def test_an_off_shape_container_costs_at_most_its_own_segment(self):
+        # One field arriving as the wrong type used to take both lines down with an
+        # AttributeError, losing model, directory, branch, bar, cost and elapsed
+        # over a field that owns none of them.
+        for field, patch in [
+            ("model", {"model": "Opus 5"}),
+            ("display_name", {"model": {"display_name": 404}}),
+            ("effort", {"effort": "high"}),
+            ("cost", {"cost": "1.23"}),
+            ("context_window", {"context_window": "nope"}),
+            ("current_usage", {"context_window": {"total_input_tokens": 10000,
+                                                  "used_percentage": 5,
+                                                  "current_usage": "none"}}),
+            ("current_dir", {"workspace": {"current_dir": 12345}}),
+            ("rate_limits", {"rate_limits": [1, 2]}),
+            ("seven_day", {"rate_limits": {"seven_day": 55}}),
+        ]:
+            with self.subTest(field=field):
+                out = run(MAIN, {**context_payload(), **patch}, self.config.name)
+                self.assertNotIn("status line:", out)
+                self.assertEqual(len(out.splitlines()), 2)
+
+    def test_an_out_of_scale_weekly_percentage_drops_only_that_segment(self):
+        payload = context_payload()
+        payload["rate_limits"] = {"seven_day": {"used_percentage": 1776950400,
+                                                "resets_at": 1776950400}}
+        out = run(MAIN, payload, self.config.name)
+        self.assertNotIn("7d", out)
+        self.assertIn("10k/200k", out)
     def test_warm_latch_set_between_runs_is_never_written_back_off(self):
         # Run 1 latches the flag; run 2 sees no cache read and must leave it lit.
         run(MAIN, context_payload("t", usage={"cache_read_input_tokens": 9900,
@@ -151,6 +192,13 @@ class SubagentEdgeCases(unittest.TestCase):
              "tokenCount": "50000", "contextWindowSize": "200000"}]})
         self.assertIn("25%", out)
 
+    def test_a_column_count_arriving_as_a_string_keeps_the_panel(self):
+        out = self.run_tasks({"columns": "120", "tasks": [
+            {"id": "a1", "name": "Explore", "status": "running",
+             "tokenCount": 50000, "contextWindowSize": 200000}]})
+        self.assertIn('"a1"', out)
+        self.assertIn("25%", out)
+
 
 class RenderedLineContracts(unittest.TestCase):
     """One full typical payload rendered end to end, plus the failure contracts
@@ -194,16 +242,24 @@ class RenderedLineContracts(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "")
 
-    def test_one_broken_task_keeps_the_other_rows(self):
+    def test_an_off_shape_description_keeps_its_own_row(self):
         payload = {"columns": 120, "tasks": [
-            {"id": "bad", "name": "X", "status": "running",
+            {"id": "coerced", "name": "X", "status": "running",
              "description": {"not": "a string"}},
             {"id": "good", "name": "Explore", "status": "running",
              "tokenCount": 1000, "contextWindowSize": 200000},
         ]}
         out = run(SUBAGENT, payload, self.config.name)
-        self.assertNotIn('"bad"', out)
+        self.assertIn('"coerced"', out)
         self.assertIn('"good"', out)
+
+    def test_a_task_that_is_not_an_object_keeps_the_other_rows(self):
+        for broken in [None, "a1", 7, ["a1"]]:
+            with self.subTest(broken=broken):
+                payload = {"columns": 120, "tasks": [broken, {
+                    "id": "good", "name": "Explore", "status": "running",
+                    "tokenCount": 1000, "contextWindowSize": 200000}]}
+                self.assertIn('"good"', run(SUBAGENT, payload, self.config.name))
 
 
 if __name__ == "__main__":

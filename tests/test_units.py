@@ -42,6 +42,12 @@ class Coercions(unittest.TestCase):
     def test_as_int_hands_back_the_callers_default(self):
         self.assertIsNone(sl.as_int("garbage", None))
 
+    def test_as_dict_reads_a_wrong_type_as_absent(self):
+        self.assertEqual(sl.as_dict({"a": 1}), {"a": 1})
+        for value in (None, "text", 5, [1, 2], True):
+            with self.subTest(value=value):
+                self.assertEqual(sl.as_dict(value), {})
+
     def test_as_float_keeps_the_decimals(self):
         self.assertEqual(sl.as_float("1.23"), 1.23)
         self.assertEqual(sl.as_float(None), 0.0)
@@ -171,6 +177,31 @@ class WeeklyUsage(unittest.TestCase):
         out = plain(self.week(used_percentage=60, resets_at="soon"))
         self.assertNotIn("↻", out)
         self.assertIn("7d 60%", out)
+
+    def test_a_percentage_that_cannot_be_one_drops_the_segment(self):
+        # anthropics/claude-code#52326: before the window has data the field can
+        # carry resets_at's epoch seconds instead of a percentage.
+        for pct in [1776950400, 1001, -5]:
+            with self.subTest(pct=pct):
+                self.assertIsNone(self.week(used_percentage=pct, resets_at=1776950400))
+
+    def test_an_overshoot_past_the_cap_pegs_at_full(self):
+        # A spent quota is the one out-of-range reading whose meaning is plain, and
+        # it is the reading the segment exists for — so it pegs instead of hiding.
+        out = self.week(used_percentage=101)
+        self.assertTrue(out.startswith(sl.RED))
+        self.assertIn("7d 100%", plain(out))
+
+    def test_both_ends_of_the_scale_still_render(self):
+        self.assertIn("7d 0%", plain(self.week(used_percentage=0)))
+        self.assertIn("7d 100%", plain(self.week(used_percentage=100)))
+
+    def test_an_off_shape_rate_limits_object_drops_the_segment(self):
+        # Neither level of the object is guaranteed to be one; a wrong type here
+        # used to cost the whole line, not just the segment that owns it.
+        for limits in [{"seven_day": 55}, {"seven_day": "55%"}, [1, 2], "none"]:
+            with self.subTest(limits=limits):
+                self.assertIsNone(sl.weekly_usage({"rate_limits": limits}))
 
 
 class CacheHit(unittest.TestCase):
@@ -415,6 +446,10 @@ class RenderRow(unittest.TestCase):
         self.assertIn("—", row)
         self.assertNotIn("%", row)
 
+    def test_a_count_past_the_window_pegs_at_full(self):
+        row = plain(sub.render(self.task(tokenCount=250000), 120, None))
+        self.assertIn("100% (250k)", row)
+
     def test_tokens_without_a_window_size_render_bare(self):
         row = plain(sub.render(self.task(contextWindowSize=0), 120, None))
         self.assertIn("50k", row)
@@ -450,6 +485,13 @@ class RenderRow(unittest.TestCase):
     def test_newlines_in_the_description_flatten_to_spaces(self):
         row = plain(sub.render(self.task(description="line1\nline2"), 120, None))
         self.assertIn("line1 line2", row)
+
+    def test_an_off_shape_label_keeps_the_row(self):
+        # Dropping the row over a malformed description would cost it the name,
+        # the glyph and the context percentage the harness cannot render itself.
+        row = plain(sub.render(self.task(label={"x": 1}), 120, None))
+        self.assertIn("Explore", row)
+        self.assertIn("25% (50k)", row)
 
     def test_label_wins_over_description(self):
         row = plain(sub.render(self.task(label="live progress",

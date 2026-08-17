@@ -45,6 +45,16 @@ def as_float(value, default=0.0):
         return default
 
 
+def as_dict(value):
+    """Coerce a nested object off the wire — a wrong type reads as absent.
+
+    Every field on line 1 and line 2 is dereferenced out of one of these, and
+    those dereferences sit outside any per-segment guard, so an off-shape
+    container would cost the whole line instead of the one segment that owns it.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def as_int(value, default=0):
     """Coerce a number off the wire.
 
@@ -94,12 +104,19 @@ def fmt_countdown(seconds):
 
 def weekly_usage(data):
     """The 7-day subscription quota — absent for API keys and before the first reply."""
-    week = (data.get("rate_limits") or {}).get("seven_day") or {}
-    # Missing and unparsable collapse into the same outcome: drop the segment,
-    # the way a format change costs only the countdown further down.
+    week = as_dict(as_dict(data.get("rate_limits")).get("seven_day"))
+    # Missing, unparsable, and impossible collapse into the same outcome: drop the
+    # segment, the way a format change costs only the countdown further down.
+    # Impossible is not hypothetical — before the window has data the field has
+    # been seen carrying resets_at's epoch seconds, which as a percentage reads
+    # as a catastrophic 1776950400% in red.
     pct = as_int(week.get("used_percentage"), None)
-    if pct is None:
+    if pct is None or not 0 <= pct <= 1000:
         return None
+    # An overshoot past the cap is the one out-of-range value whose meaning is
+    # plain: the quota is spent. Dropping the segment there would hide the number
+    # at the moment it matters most, so it pegs instead.
+    pct = min(100, pct)
 
     color = RED if pct >= WEEK_RED else AMBER if pct >= WEEK_AMBER else GREEN
     out = f"{color}7d {pct}%{RESET}"
@@ -288,17 +305,25 @@ def main():
 
     # "Opus 5 (1M context)" -> "Opus 5". The window size is already on line 2,
     # spelled out in tokens.
-    model = ((data.get("model") or {}).get("display_name") or "?").split(" (")[0]
-    effort = (data.get("effort") or {}).get("level")
-    cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd") or ""
-    cost = as_float((data.get("cost") or {}).get("total_cost_usd"))
-    duration_ms = (data.get("cost") or {}).get("total_duration_ms") or 0
+    model = str(as_dict(data.get("model")).get("display_name") or "?").split(" (")[0]
+    effort = as_dict(data.get("effort")).get("level")
+    spend = as_dict(data.get("cost"))
+    # str, because the path lands in os.path and in a f-string either way.
+    cwd = str(as_dict(data.get("workspace")).get("current_dir") or data.get("cwd") or "")
+    cost = as_float(spend.get("total_cost_usd"))
+    duration_ms = spend.get("total_duration_ms") or 0
 
-    ctx = data.get("context_window") or {}
-    pct = as_int(ctx.get("used_percentage"))
+    ctx = as_dict(data.get("context_window"))
+    # A percentage outside the scale is not a measurement: the harness has been
+    # seen reporting one that contradicts the token counts beside it, and pinning
+    # it to 100 would dress garbage up as the one signal on this line that asks
+    # the reader to /compact. It reads as unknown instead, and the counts stay.
+    pct = as_int(ctx.get("used_percentage"), None)
+    if pct is not None and not 0 <= pct <= 100:
+        pct = None
     used = as_int(ctx.get("total_input_tokens"))
     size = as_int(ctx.get("context_window_size"))
-    usage = ctx.get("current_usage") or {}
+    usage = as_dict(ctx.get("current_usage"))
 
     warmed = session_meta(data.get("session_id"), model, effort,
                           as_int(usage.get("cache_read_input_tokens")))
@@ -314,16 +339,18 @@ def main():
         head.append(f"🌿 {branch}")
 
     # ── line 2 ────────────────────────────────────────────────────────────────
-    if used:
+    if used and pct is not None:
         bar = (GREEN, AMBER, RED)[context_level(pct, used)] + progress_bar(pct) + RESET
         body = [f"{bar} {pct}%"]
-        if size:
-            body.append(f"{fmt_tokens(used)}/{fmt_tokens(size)}")
     else:
         # Claude Code reports context from the last API response, so there is no
-        # measurement at session start or between a /compact and the next reply.
-        # A literal 0% would read as "empty context" when it is merely unknown.
-        body = [f"{DIM}{'░' * 10} —{RESET}"]
+        # percentage at session start or between a /compact and the next reply,
+        # and an off-scale one says just as little. A literal 0% would read as
+        # "empty context" when it is merely unknown. An empty bar guesses at no
+        # fill, and absolute tokens still colour the row once they are known.
+        body = [f"{(DIM, AMBER, RED)[context_level(0, used)]}{'░' * 10} —{RESET}"]
+    if used and size:
+        body.append(f"{fmt_tokens(used)}/{fmt_tokens(size)}")
     cache = cache_hit(usage, warmed)
     if cache:
         body.append(cache)
