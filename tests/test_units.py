@@ -142,6 +142,11 @@ class ModuleSync(unittest.TestCase):
                     self.assertEqual(sl.context_level(pct, tokens),
                                      sub.context_level(pct, tokens))
 
+    def test_effort_levels_are_spelled_the_same(self):
+        for level in ("low", "high", "xhigh", "max", 32000, 32000.0, 500, True):
+            with self.subTest(level=level):
+                self.assertEqual(sl.fmt_effort_level(level), sub.fmt_effort_level(level))
+
     def test_meta_path_matches_for_the_same_session(self):
         with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "/cfg"}):
             for session_id in ("plain", "a b/c!", 12345):
@@ -395,6 +400,18 @@ class FmtEffort(unittest.TestCase):
 
     def test_numeric_effort_renders_as_a_token_budget(self):
         self.assertEqual(sub.fmt_effort({"effort": 32000}, None), "32k")
+
+    def test_an_inherited_budget_is_spelled_like_the_main_line(self):
+        # The hand-off file keeps the raw number, so the panel does the spelling.
+        self.assertEqual(plain(sub.fmt_effort({}, 32000)), "32k")
+        self.assertEqual(plain(sub.fmt_effort({}, 32000)), sl.fmt_effort_level(32000))
+
+    def test_the_main_line_spells_a_level_the_same_way(self):
+        # A number reaching str.join would take the whole line down, so the
+        # session's level is coerced the way a task's own effort is.
+        self.assertEqual(sl.fmt_effort_level("max"), "max")
+        self.assertEqual(sl.fmt_effort_level(32000), "32k")
+        self.assertEqual(sl.fmt_effort_level(32000.0), "32k")
 
 
 class SessionEffort(unittest.TestCase):

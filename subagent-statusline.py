@@ -121,14 +121,30 @@ def session_effort(session_id):
     return meta.get("effort") if isinstance(meta, dict) else None
 
 
+def fmt_effort_level(level):
+    """Spell an effort level. Duplicated verbatim in statusline.py, which spells
+    the session's level through it — keep the two in step.
+
+    Documented as one of the level strings, but the per-task field beside it
+    admits a numeric token budget, so a number here is a shape to render rather
+    than a crash: joining one into the line would cost every other segment.
+    """
+    if isinstance(level, bool) or not isinstance(level, (int, float)):
+        return str(level)
+    return fmt_tokens(int(level))
+
+
 def fmt_effort(task, inherited):
-    """Own effort renders plain; an inherited one renders dim."""
+    """Own effort renders plain; an inherited one renders dim.
+
+    Both go through fmt_effort_level: the inherited one arrives raw from the
+    hand-off file, and a token budget has to read the same in the panel as it
+    does on the main line above it.
+    """
     own = task.get("effort")
     if own is None:
-        return f"{DIM}{inherited}{RESET}" if inherited else None
-    if isinstance(own, (int, float)):
-        return fmt_tokens(int(own))
-    return str(own)
+        return f"{DIM}{fmt_effort_level(inherited)}{RESET}" if inherited else None
+    return fmt_effort_level(own)
 
 
 def render(task, columns, inherited):

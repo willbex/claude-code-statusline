@@ -78,6 +78,20 @@ def fmt_tokens(n):
     return str(n)
 
 
+def fmt_effort_level(level):
+    """Spell an effort level. Duplicated verbatim in subagent-statusline.py, which
+    spells both a task's own effort and an inherited one through it — keep the
+    two in step.
+
+    Documented as one of the level strings, but the per-task field beside it
+    admits a numeric token budget, so a number here is a shape to render rather
+    than a crash: joining one into the line would cost every other segment.
+    """
+    if isinstance(level, bool) or not isinstance(level, (int, float)):
+        return str(level)
+    return fmt_tokens(int(level))
+
+
 def fmt_duration(ms):
     # Fixing the type here settles it for h/m/s below: // is floor division,
     # which keeps a float a float, and the :02d codes accept only int.
@@ -331,7 +345,7 @@ def main():
     # ── line 1 ────────────────────────────────────────────────────────────────
     head = [f"{CYAN}{model}{RESET}" + (f" {AMBER}⚡{RESET}" if data.get("fast_mode") else "")]
     if effort:
-        head.append(effort)
+        head.append(fmt_effort_level(effort))
     root, branch = git_info(cwd)
     if cwd:
         head.append(f"📁 {fmt_dir(cwd, root)}")

@@ -82,6 +82,13 @@ class StatusLineEdgeCases(unittest.TestCase):
         out = run(MAIN, context_payload(total_input_tokens=1.2e4), self.config.name)
         self.assertIn("12k/200k", out)
 
+    def test_a_numeric_effort_level_keeps_both_lines(self):
+        payload = context_payload()
+        payload["effort"] = {"level": 32000}
+        out = run(MAIN, payload, self.config.name)
+        self.assertNotIn("status line:", out)
+        self.assertIn("32k", out)
+
     def test_an_off_scale_percentage_reads_as_unknown_and_keeps_the_counts(self):
         # anthropics/claude-code#74355: the reported percentage can contradict the
         # token counts beside it. Pegging it to 100 would dress garbage up as a
@@ -116,6 +123,16 @@ class StatusLineEdgeCases(unittest.TestCase):
                 self.assertNotIn("status line:", out)
                 self.assertEqual(len(out.splitlines()), 2)
 
+    def test_a_numeric_effort_reads_the_same_in_the_panel_as_on_the_line(self):
+        payload = context_payload("hand-off")
+        payload["effort"] = {"level": 32000}
+        self.assertIn("32k", run(MAIN, payload, self.config.name).splitlines()[0])
+        panel = run(SUBAGENT, {"session_id": "hand-off", "columns": 120, "tasks": [
+            {"id": "a1", "name": "Explore", "status": "running",
+             "tokenCount": 1000, "contextWindowSize": 200000}]}, self.config.name)
+        self.assertIn("32k", panel)
+        self.assertNotIn("32000", panel)
+
     def test_an_out_of_scale_weekly_percentage_drops_only_that_segment(self):
         payload = context_payload()
         payload["rate_limits"] = {"seven_day": {"used_percentage": 1776950400,
@@ -123,6 +140,7 @@ class StatusLineEdgeCases(unittest.TestCase):
         out = run(MAIN, payload, self.config.name)
         self.assertNotIn("7d", out)
         self.assertIn("10k/200k", out)
+
     def test_warm_latch_set_between_runs_is_never_written_back_off(self):
         # Run 1 latches the flag; run 2 sees no cache read and must leave it lit.
         run(MAIN, context_payload("t", usage={"cache_read_input_tokens": 9900,
