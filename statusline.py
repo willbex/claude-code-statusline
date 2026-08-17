@@ -135,21 +135,39 @@ def progress_bar(pct, width=10):
     return "█" * full + partial + DIM + "░" * (width - full - len(partial))
 
 
+def repo_marker(path):
+    """The .git a repository actually has, or "" — a pointer file, or a directory
+    holding both a HEAD and a refs/.
+
+    git's own test for a git directory wants a valid HEAD plus an objects/ and a
+    refs/; the two cheapest of those are enough to tell a repository from the
+    `.git` some other tool left behind, and a leftover sitting at /tmp would
+    otherwise claim every path beneath it as its own repo.
+    """
+    marker = os.path.join(path, ".git")
+    if os.path.isfile(marker):
+        return marker
+    # lexists, not exists: git accepts a symlinked HEAD, and on an unborn branch
+    # it points at a ref file that does not exist yet.
+    return marker if (os.path.lexists(os.path.join(marker, "HEAD"))
+                      and os.path.isdir(os.path.join(marker, "refs"))) else ""
+
+
 def git_info(cwd):
     """Return (repo_root, branch), read from .git/HEAD.
 
     This runs on every message and on the idle refresh tick, where importing
     subprocess alone costs more than everything else here put together.
-    Once .git exists the root is known, so an unreadable HEAD still reports it.
+    Once repo_marker accepts a .git the root is known, so a HEAD that is there
+    but unreadable still reports it.
     """
     path = os.path.abspath(cwd or ".")
-    while not os.path.exists(os.path.join(path, ".git")):
+    while not (git_dir := repo_marker(path)):
         parent = os.path.dirname(path)
         if parent == path:
             return "", ""
         path = parent
 
-    git_dir = os.path.join(path, ".git")
     if os.path.isfile(git_dir):  # worktree or submodule: a pointer, not a dir
         try:
             with open(git_dir) as f:

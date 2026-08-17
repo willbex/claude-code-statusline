@@ -228,12 +228,18 @@ class GitInfo(unittest.TestCase):
         self.root = self.tmp.name
 
     def write_head(self, git_dir, content):
-        os.makedirs(git_dir, exist_ok=True)
+        """A dir-form .git carries a refs/ beside HEAD, and repo_marker wants both."""
+        os.makedirs(os.path.join(git_dir, "refs"), exist_ok=True)
         with open(os.path.join(git_dir, "HEAD"), "w") as f:
             f.write(content)
 
     def test_no_repo_anywhere_above(self):
-        self.assertEqual(sl.git_info(self.root), ("", ""))
+        # Only the temp tree is ours. Whatever sits above it belongs to the machine
+        # — a developer whose TMPDIR lives inside a checkout has a real root up
+        # there — so the contract is that nothing in the tree claims to be one.
+        deep = os.path.join(self.root, "a", "b")
+        os.makedirs(deep)
+        self.assertFalse(sl.git_info(deep)[0].startswith(self.root))
 
     def test_branch_from_a_plain_repo(self):
         self.write_head(os.path.join(self.root, ".git"), "ref: refs/heads/main\n")
@@ -250,8 +256,39 @@ class GitInfo(unittest.TestCase):
                         "0123456789abcdef0123456789abcdef01234567\n")
         self.assertEqual(sl.git_info(self.root), (self.root, "0123456"))
 
-    def test_missing_head_still_reports_the_root(self):
+    def test_a_git_directory_without_a_head_is_not_a_repo(self):
+        # A stray .git left behind by some other tool — /tmp/.git is a real
+        # example. git itself refuses to call it a repository, and calling it one
+        # relabels every path underneath repo-relative.
         os.makedirs(os.path.join(self.root, ".git"))
+        self.assertNotEqual(sl.git_info(self.root)[0], self.root)
+
+    def test_a_git_directory_without_refs_is_not_a_repo(self):
+        # A leftover carrying a stray HEAD and nothing else: git wants objects/ and
+        # refs/ beside it before it calls the directory a repository.
+        git_dir = os.path.join(self.root, ".git")
+        os.makedirs(git_dir)
+        with open(os.path.join(git_dir, "HEAD"), "w") as f:
+            f.write("garbage\n")
+        self.assertNotEqual(sl.git_info(self.root)[0], self.root)
+
+    def test_a_symlinked_head_is_still_a_repo(self):
+        # git accepts a symref HEAD, and on an unborn branch its target does not
+        # exist yet — which a follow-the-link check reads as no repo at all.
+        git_dir = os.path.join(self.root, ".git")
+        os.makedirs(os.path.join(git_dir, "refs"))
+        os.symlink(os.path.join(git_dir, "refs", "heads", "main"),
+                   os.path.join(git_dir, "HEAD"))
+        self.assertEqual(sl.git_info(self.root), (self.root, ""))
+
+    def test_unreadable_head_still_reports_the_root(self):
+        git_dir = os.path.join(self.root, ".git")
+        self.write_head(git_dir, "ref: refs/heads/main\n")
+        head = os.path.join(git_dir, "HEAD")
+        os.chmod(head, 0)
+        self.addCleanup(os.chmod, head, 0o644)
+        if os.access(head, os.R_OK):  # root ignores the mode bits
+            self.skipTest("running as a user that can read a 0-mode file")
         self.assertEqual(sl.git_info(self.root), (self.root, ""))
 
     def test_worktree_pointer_file(self):
